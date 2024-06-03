@@ -425,7 +425,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         }
 
         /// <summary>
-        /// This callback receives the subscribed account's information in response to reqAccountUpdates().
+        /// This callback receives the subscribed account's information (e.g. unrealized and realized P&L)
+        /// in response to reqAccountUpdates().
         /// You can only subscribe to one account at a time.
         /// </summary>
         /// <param name="key">A string that indicates one type of account value.</param>

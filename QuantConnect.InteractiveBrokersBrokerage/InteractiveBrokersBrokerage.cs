@@ -105,6 +105,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
         private IBAutomater.IBAutomater _ibAutomater;
 
+        // The client ID field specified in the API connection is used to distinguish different API clients.
         // Existing orders created in TWS can *only* be cancelled/modified when connected with ClientId = 0
         private const int ClientId = 0;
 
@@ -894,11 +895,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                         Log.Error("InteractiveBrokersBrokerage.Connect(): timeout waiting for connect callback");
                     }
 
-                    // create the message processing thread
+                    // create the inbound message processing thread. note EReader object should be created _after_
+                    // the TWS connection is established, as client&server negotiate the highest common version.
                     var reader = new EReader(_client.ClientSocket, _signal);
-                    reader.Start();
+                    reader.Start();  // TODO: shouldn't this be invoked after _messageProcessingThread.Start() is called?
 
-                    _messageProcessingThread = new Thread(() =>
+                    _messageProcessingThread = new Thread(() => // i.e. the 'reader thread' as per IBKR docs
                     {
                         Log.Trace("InteractiveBrokersBrokerage.Connect(): IB message processing thread started: #" + Thread.CurrentThread.ManagedThreadId);
 
@@ -943,7 +945,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     if (!_client.Connected) throw new Exception("InteractiveBrokersBrokerage.Connect(): Connection returned but was not in connected state.");
 
                     // request account information for logging purposes
-                    var group = string.IsNullOrEmpty(_financialAdvisorsGroupFilter) ? "All" : _financialAdvisorsGroupFilter;
+                    var group = string.IsNullOrEmpty(_financialAdvisorsGroupFilter) ? "All" : _financialAdvisorsGroupFilter;  // see https://ibkrcampus.com/ibkr-api-page/twsapi-doc/#account-summary-tags for valid tags
                     _client.ClientSocket.reqAccountSummary(GetNextId(), group, "AccountType");
                     _client.ClientSocket.reqManagedAccts();
                     _client.ClientSocket.reqFamilyCodes();
@@ -4039,6 +4041,9 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
         /// <summary>
         /// Submits a market data request (a subscription) for a given contract to IB.
+        /// Note received data is not tick-by-tick but consists of aggregate snapshots taken several times per second.
+        ///
+        /// See https://ibkrcampus.com/ibkr-api-page/twsapi-doc/#watchlist-data
         /// </summary>
         private void RequestMarketData(Contract contract, int requestId)
         {
@@ -4054,7 +4059,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         }
 
         /// <summary>
-        /// Handles the re-rout market data request event issued by the IB server
+        /// Handles the re-route market data request event issued by the IB server
         /// </summary>
         private void HandleMarketDataReRoute(object sender, IB.RerouteMarketDataRequestEventArgs e)
         {
