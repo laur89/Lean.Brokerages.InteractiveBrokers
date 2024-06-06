@@ -45,6 +45,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using System.Text;
+using Accord.Math;
 using Bar = QuantConnect.Data.Market.Bar;
 using HistoryRequest = QuantConnect.Data.HistoryRequest;
 using IB = QuantConnect.Brokerages.InteractiveBrokers.Client;
@@ -127,6 +128,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         private IOrderProvider _orderProvider;
         private IMapFileProvider _mapFileProvider;
         private IDataAggregator _aggregator;
+        private IbOrderBook _orderBook;
         private IB.InteractiveBrokersClient _client;
 
         private string _agentDescription;
@@ -1468,6 +1470,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             _client.Error += HandleError;
             _client.TickPrice += HandleTickPrice;
             _client.TickSize += HandleTickSize;
+            _client.MktDepth += HandleMktDepth;
             _client.CurrentTimeUtc += HandleBrokerTime;
             _client.ReRouteMarketDataRequest += HandleMarketDataReRoute;
             if (!string.IsNullOrEmpty(financialAdvisorsGroupFilter))
@@ -1844,6 +1847,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             _client.ContractDetails -= clientOnContractDetails;
 
             Log.Trace($"InteractiveBrokersBrokerage.GetContractDetails(): contracts found: {contractDetailsList.Count}");
+            // Log.Trace("TODO: deleteme, just confirming changes are actually reflected at runtime");
 
             return contractDetailsList.FirstOrDefault();
         }
@@ -4055,7 +4059,16 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
 
             // we would like to receive OI (101)
+            Log.Trace($"InteractiveBrokersBrokerage.RequestMarketData(): requesting data for {contract.Symbol}");
             Client.ClientSocket.reqMktData(requestId, contract, "101", false, false, new List<TagValue>());
+        }
+        
+        /// <summary>
+        /// Submits a market depth request (a subscription) for a given contract to IB.
+        /// </summary>
+        private void RequestMarketDepth(Contract contract, int requestId)
+        {
+            Client.ClientSocket.reqMarketDepth(requestId, contract, 5, false,  new List<TagValue>());
         }
 
         /// <summary>
@@ -4074,6 +4087,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             };
 
             RequestMarketData(underlyingContract, e.RequestId);
+            RequestMarketDepth(underlyingContract, e.RequestId);  // TODO: confirm reqId... don't think it's valid here
         }
 
         /// <summary>
@@ -4082,8 +4096,10 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <param name="symbols">The symbols to be added keyed by SecurityType</param>
         private bool Subscribe(IEnumerable<Symbol> symbols)
         {
+            //Log.Trace("InteractiveBrokersBrokerage.Subscribe(): Called for: " + symbols.Count()); // TODO debug, comment out/delete
             if (!CanHandleSubscriptionRequest(symbols, "subscribe"))
             {
+                //Log.Trace("InteractiveBrokersBrokerage.Subscribe(): can't handle sub request!"); // TODO debug, comment out/delete
                 return true;
             }
 
@@ -4114,6 +4130,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                             }
 
                             var id = GetNextId();
+                            var depthId = GetNextId();
                             var contract = CreateContract(subscribeSymbol, includeExpired: false);
                             var symbolProperties = _symbolPropertiesDatabase.GetSymbolProperties(subscribeSymbol.ID.Market, subscribeSymbol, subscribeSymbol.SecurityType, Currencies.USD);
                             var priceMagnifier = symbolProperties.PriceMagnifier;
@@ -4121,6 +4138,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                             _requestInformation[id] = new RequestInformation
                             {
                                 RequestId = id,
+                                DepthReqtId = depthId,
                                 RequestType = RequestType.Subscription,
                                 AssociatedSymbol = symbol,
                                 Message = $"[Id={id}] Subscribe: {symbol.Value} ({GetContractDescription(contract)})"
@@ -4132,6 +4150,13 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                             _subscriptionTimes[id] = DateTime.UtcNow;
 
                             RequestMarketData(contract, id);
+                            // RequestMarketDepth(contract, depthId);    // TODO: confirm reqId
+
+                            if (symbol.SecurityType == SecurityType.Future)  // TODO: hardcoded to futures only
+                            {
+                                RequestMarketDepth(contract, depthId);    // TODO: confirm reqId
+                                _orderBook = new IbOrderBook(symbol);  // TODO: this is surely not the place now is it                                
+                            }
 
                             _subscribedSymbols[symbol] = id;
                             _subscribedTickers[id] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
@@ -4213,6 +4238,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                                 }
 
                                 Client.ClientSocket.cancelMktData(id);
+                                // Client.ClientSocket.cancelMktDepth(id); // TODO, gotta handle L2 data cancellation
 
                                 SubscriptionEntry entry;
                                 return _subscribedTickers.TryRemove(id, out entry);
@@ -4290,6 +4316,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
         private void HandleTickPrice(object sender, IB.TickPriceEventArgs e)
         {
+            // Log.Trace($"InteractiveBrokersBrokerage.HandleTickPrice(): {e.TickerId}, field: {e.Field}, price: {e.Price}");
+            
             // tickPrice events are always followed by tickSize events,
             // so we save off the bid/ask/last prices and only emit ticks in the tickSize event handler.
 
@@ -4517,7 +4545,67 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     Time = GetRealTimeTickTime(symbol)
                 };
 
+                
+                
+                //Log.Trace($"InteractiveBrokersBrokerage.HandleTickSize(): emitting Tick");
+                
                 _aggregator.Update(tick);
+            }
+        }
+        
+        private void HandleMktDepth(object sender, IB.MktDepthEventArgs e)
+        {
+            // SubscriptionEntry entry;
+            // if (!_subscribedTickers.TryGetValue(e.TickerId, out entry))
+            // {
+            //     Console.WriteLine("HandleMktDepth() BOOO :(");
+            //     return;
+            // }
+            //
+            // var symbol = entry.Symbol;
+            
+            // negative size (-1) means no quantity available, normalize to zero
+            var quantity = e.Size < 0 ? 0 : e.Size;
+            // Console.WriteLine("HandleMktDepth() " + e.TickerId + " - Symbol: " + symbol + "; size: " + quantity);
+            Console.WriteLine("HandleMktDepth() " + e.TickerId + "; op: " + e.Operation + "; position: " + e.Position + 
+                              "; side: " + (e.Side == 0 ? "ask" : "bid") + "; price: " + e.Price + "; size: " + e.Size);
+            
+            
+            
+            ///////////////////////// TODO my addition, remove above! /////////////////////////////
+            // Handles an event to update the market depth data. 
+            // Event object e has the following properties:
+            // e.id              The OrderID from the reqMktDepth call (long) 
+            // e.Position        The line (level) to be updated (long)
+            // e.operation       0=insert  1=update 2=delete the row (long)
+            // e.side            0=ask  1=bid  (long)
+            // e.price           Bid or Ask Price   (double)
+            // e.Size            Number of shares/contracts bid or asked (long)
+            // See which side of the market this update is on
+            if (e.Side == 0) {  // ask side
+                switch (e.Operation) {
+                    //  0 = Insert quote in new position
+                    case 0 : _orderBook.InsertAsk(e.Position, e.Price, e.Size);
+                             break;
+                    // 1 = Update quote in existing position
+                    case 1 : _orderBook.UpdateAsk(e.Position, e.Price, e.Size);
+                             break;
+                    // 2 = Delete current quote. Make sure we have a quote at this level
+                    case 2 : _orderBook.RemoveAsk(e.Position);
+                             break;
+                }
+            } else {  // bid side                      
+                switch (e.Operation) {                    
+                    //  0 = Insert quote in new position
+                    case 0 : _orderBook.InsertBid(e.Position, e.Price, e.Size);
+                        break;
+                    // 1 = Update quote in existing position
+                    case 1 : _orderBook.UpdateBid(e.Position, e.Price, e.Size);
+                        break;
+                    // 2 = Delete current quote. Make sure we have a quote at this level
+                    case 2 : _orderBook.RemoveBid(e.Position);
+                               break;
+                }
             }
         }
 
@@ -5792,6 +5880,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         private class RequestInformation
         {
             public int RequestId { get; set; }
+            public int DepthReqtId { get; set; }
 
             public RequestType RequestType { get; set; }
 
