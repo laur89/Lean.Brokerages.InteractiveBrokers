@@ -44,6 +44,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// TickSize event handler
         /// </summary>
         public event EventHandler<TickSizeEventArgs> TickSize;
+        
+        /// <summary>
+        /// Level 2/Market depth/DOM event handler
+        /// </summary>
+        public event EventHandler<MktDepthEventArgs> MktDepth;
 
         /// <summary>
         /// NextValidId event handler
@@ -271,6 +276,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// <param name="attribs">Tick attributes.</param>
         public override void tickPrice(int tickerId, int field, double price, TickAttrib attribs)
         {
+            //Console.WriteLine("tickPrice()");
             OnTickPrice(new TickPriceEventArgs(tickerId, field, price, attribs));
         }
 
@@ -282,9 +288,32 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// <param name="size">The actual size.</param>
         public override void tickSize(int tickerId, int field, decimal size)
         {
+            //Console.WriteLine("tickSize()");
             OnTickSize(new TickSizeEventArgs(tickerId, field, size));
         }
 
+        /// <summary>
+        /// Market depth/L2 data callback.
+        /// See https://ibkrcampus.com/ibkr-api-page/twsapi-doc/#receive-market-depth
+        /// </summary>
+        /// <param name="tickerId">The request's unique identifier.</param>
+        /// <param name="position">The order book’s row being updated.</param>
+        /// <param name="operation">Indicates a change in the row’s value:
+        ///    0 = insert (insert this new order into the row identified by ‘position’)·
+        ///    1 = update (update the existing order in the row identified by ‘position’)·
+        ///    2 = delete (delete the existing order at the row identified by ‘position’).
+        /// </param>
+        /// <param name="side">0 for ask, 1 for bid.</param>
+        /// <param name="price">The order's price.</param>
+        /// <param name="size">The order’s size.</param>
+        public override void updateMktDepth(int tickerId, int position, int operation, int side, double price, decimal size)
+        {
+            OnMktDepthData(new MktDepthEventArgs(tickerId, position, operation, side, price, size));
+            
+            // Console.WriteLine("UpdateMarketDepth!!!!!!!!!!. " + tickerId + " - Position: " + position + ", Operation: " + operation + ", Side: " + side + ", Price: " + Util.DoubleMaxString(price) + ", Size: " + Util.DecimalMaxString(size));
+            // Console.WriteLine("UpdateMarketDepth!!!!!!!!!!. " + tickerId + " - Position: " + position + ", Operation: " + operation + ", Side: " + side + ", price: " + price + ", Size: " + size);
+        }
+        
         /// <summary>
         /// Receives the next valid Order ID.
         /// </summary>
@@ -679,6 +708,14 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         protected virtual void OnTickSize(TickSizeEventArgs e)
         {
             TickSize?.Invoke(this, e);
+        }
+        
+        /// <summary>
+        /// L2 data invocator
+        /// </summary>
+        protected virtual void OnMktDepthData(MktDepthEventArgs e)
+        {
+            MktDepth?.Invoke(this, e);
         }
 
         /// <summary>
