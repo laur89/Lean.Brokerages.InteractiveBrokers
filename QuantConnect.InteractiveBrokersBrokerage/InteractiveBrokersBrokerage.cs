@@ -45,7 +45,6 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using System.Text;
-using Accord.Math;
 using Bar = QuantConnect.Data.Market.Bar;
 using HistoryRequest = QuantConnect.Data.HistoryRequest;
 using IB = QuantConnect.Brokerages.InteractiveBrokers.Client;
@@ -1399,10 +1398,13 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 _mapFileProvider = Composer.Instance.GetExportedValueByTypeName<IMapFileProvider>(mapFileProviderName);
                 _mapFileProvider.Initialize(Composer.Instance.GetExportedValueByTypeName<IDataProvider>(Config.Get("data-provider", "DefaultDataProvider")));
             }
+            
+            Console.WriteLine("KEK??? - Composer.Instance.GetPart<IDataAggregator>();");
             _aggregator = Composer.Instance.GetPart<IDataAggregator>();
             if (_aggregator == null)
             {
                 // toolbox downloader case
+                Console.WriteLine("KEK~!!!! - DataAGgregator not found, getting the toolbox one??????");
                 var aggregatorName = Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager");
                 Log.Trace($"InteractiveBrokersBrokerage.InteractiveBrokersBrokerage(): found no data aggregator instance, creating {aggregatorName}");
                 _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName);
@@ -4032,12 +4034,17 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <returns>The new enumerator for this subscription request</returns>
         public IEnumerator<BaseData> Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
         {
+            // TODO: this is called 3x for MNQ!
+            Console.WriteLine("KEK IB public Subscribe() for config " + dataConfig); // TODO deleteme
             if (!CanSubscribe(dataConfig.Symbol))
             {
+                Console.WriteLine("KEK IB CANNOT SUB, returning"); // TODO deleteme
                 return null;
             }
 
             var enumerator = _aggregator.Add(dataConfig, newDataAvailableHandler);
+            // TODO: to separate market data & depth subscriptions, i'd do it here
+            // based on dataConfig.type/ticktype or smth:
             _subscriptionManager.Subscribe(dataConfig);
 
             return enumerator;
@@ -4096,6 +4103,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// <param name="symbols">The symbols to be added keyed by SecurityType</param>
         private bool Subscribe(IEnumerable<Symbol> symbols)
         {
+            Console.WriteLine("private Subscribe()"); // TODO deleteme
             //Log.Trace("InteractiveBrokersBrokerage.Subscribe(): Called for: " + symbols.Count()); // TODO debug, comment out/delete
             if (!CanHandleSubscriptionRequest(symbols, "subscribe"))
             {
@@ -4160,6 +4168,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
                             _subscribedSymbols[symbol] = id;
                             _subscribedTickers[id] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
+                            _subscribedTickers[depthId] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
 
                             Log.Trace($"InteractiveBrokersBrokerage.Subscribe(): Subscribe Processed: {symbol.Value} ({GetContractDescription(contract)}) # {id}. SubscribedSymbols.Count: {_subscribedSymbols.Count}");
                         }
@@ -4555,14 +4564,14 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         
         private void HandleMktDepth(object sender, IB.MktDepthEventArgs e)
         {
-            // SubscriptionEntry entry;
-            // if (!_subscribedTickers.TryGetValue(e.TickerId, out entry))
-            // {
-            //     Console.WriteLine("HandleMktDepth() BOOO :(");
-            //     return;
-            // }
-            //
-            // var symbol = entry.Symbol;
+            SubscriptionEntry entry;
+            if (!_subscribedTickers.TryGetValue(e.TickerId, out entry))
+            {
+                Console.WriteLine("HandleMktDepth() BOOO :(");
+                return;
+            }
+            
+            var symbol = entry.Symbol;
             
             // negative size (-1) means no quantity available, normalize to zero
             var quantity = e.Size < 0 ? 0 : e.Size;
@@ -4606,7 +4615,9 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     case 2 : _orderBook.RemoveBid(e.Position);
                                break;
                 }
-            }
+            } // TODO: should we explicitly check for e.Side !=1 just to make sure api hasn't changed?
+
+            _aggregator.Update(_orderBook.toOrderBook(GetRealTimeTickTime(symbol)));
         }
 
         /// <summary>
