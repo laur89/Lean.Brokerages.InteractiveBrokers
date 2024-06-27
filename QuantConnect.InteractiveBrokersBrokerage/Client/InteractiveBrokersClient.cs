@@ -49,6 +49,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         /// Level 2/Market depth/DOM event handler
         /// </summary>
         public event EventHandler<MktDepthEventArgs> MktDepth;
+        
+        /// <summary>
+        /// Tape event handler
+        /// </summary>
+        public event EventHandler<TapeEventArgs> Tape;
 
         /// <summary>
         /// NextValidId event handler
@@ -312,6 +317,28 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
             
             // Console.WriteLine("UpdateMarketDepth!!!!!!!!!!. " + tickerId + " - Position: " + position + ", Operation: " + operation + ", Side: " + side + ", Price: " + Util.DoubleMaxString(price) + ", Size: " + Util.DecimalMaxString(size));
             // Console.WriteLine("UpdateMarketDepth!!!!!!!!!!. " + tickerId + " - Position: " + position + ", Operation: " + operation + ", Side: " + side + ", price: " + price + ", Size: " + size);
+        }
+        
+        /// <summary>
+        /// Tape data callback.
+        /// See https://ibkrcampus.com/ibkr-api-page/twsapi-doc/#receive-tick-data
+        /// </summary>
+        /// <param name="reqId">The request's unique identifier.</param>
+        /// <param name="tickType">0: “Last” or 1: “AllLast”.</param>
+        /// <param name="time">tick-by-tick real-time tick timestamp.</param>
+        /// <param name="price">tick-by-tick real-time tick last price.</param>
+        /// <param name="size">tick-by-tick real-time tick last size</param>
+        /// <param name="tickAttribLast">tick-by-tick real-time last tick attribs (bit 0 – past limit, bit 1 – unreported)</param>
+        /// <param name="exchange">tick-by-tick real-time tick exchange</param>
+        /// <param name="specialConditions">tick-by-tick real-time tick special conditions. Conditions under which the operation took place.
+        ///     see: https://www.interactivebrokers.com/en/index.php?f=7235
+        /// </param>
+        public override void tickByTickAllLast(int reqId, int tickType, long time, double price, decimal size, TickAttribLast tickAttribLast, string exchange, string specialConditions)
+        {
+            Console.WriteLine("tickByTickAllLast!!!!!!!!!!. " + " tickType " + tickType + " (" + (tickType == 0 ? "Last" : "AllLast") + "); price: " + price + "; Size: " + size + "; specialCond: " + specialConditions);
+            OnTapeData(new TapeEventArgs(reqId, tickType, time, price, size));
+            // Console.WriteLine("Tick-By-Tick. Request Id: {0}, TickType: {1}, Time: {2}, Price: {3}, Size: {4}, Exchange: {5}, Special Conditions: {6}, PastLimit: {7}, Unreported: {8}",
+                // reqId, tickType == 1 ? "Last" : "AllLast", Util.UnixSecondsToString(time, "yyyyMMdd-HH:mm:ss"), Util.DoubleMaxString(price), Util.DecimalMaxString(size), exchange, specialConditions, tickAttribLast.PastLimit, tickAttribLast.Unreported);
         }
         
         /// <summary>
@@ -716,6 +743,15 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         protected virtual void OnMktDepthData(MktDepthEventArgs e)
         {
             MktDepth?.Invoke(this, e);
+        }
+                
+        /// <summary>
+        /// Tape data invocator
+        /// TODO: given tape speed/bandwidth, maybe skip EventArgs alltogether and pass args skipping the wrapper object?
+        /// </summary>
+        protected virtual void OnTapeData(TapeEventArgs e)
+        {
+            Tape?.Invoke(this, e);
         }
 
         /// <summary>
