@@ -18,11 +18,11 @@ using System;
 namespace QuantConnect.Brokerages.InteractiveBrokers.Client
 {
     /// <summary>
-    /// Event arguments class for the <see cref="InteractiveBrokersClient.MktDepth"/> event
+    /// Event arguments class for the <see cref="InteractiveBrokersClient.Tape"/> event
     /// 
-    /// see https://ibkrcampus.com/ibkr-api-page/twsapi-doc/#receive-market-depth
+    /// see https://ibkrcampus.com/ibkr-api-page/twsapi-doc/#receive-tick-data
     /// </summary>
-    public sealed class MktDepthEventArgs : EventArgs
+    public sealed class TapeEventArgs : EventArgs
     {
         /// <summary>
         /// The request's unique identifier.
@@ -30,32 +30,33 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Client
         public int TickerId { get; }
 
         /// <summary>
-        /// The order book’s row being updated
+        /// 0 = “Last”, 1 = “AllLast”
         /// </summary>
-        public int Position { get; }
+        public int TickType { get; }
         
         /// <summary>
-        /// 0 = insert, 1 = update, 2 = delete
+        /// real-time tick timestamp
         /// </summary>
-        public int Operation { get; }
-        
-        /// <summary>
-        /// 0 = ask, 1 = bid
-        /// </summary>
-        public int Side { get; }
+        public long Time { get; }
 
+        /// <summary>
+        /// real-time tick last price
+        /// </summary>
         public double Price { get; }
+        
+        /// <summary>
+        /// real-time tick last size
+        /// </summary>
         public decimal Size { get; }
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="MktDepthEventArgs"/> class
+        /// Initializes a new instance of the <see cref="TapeEventArgs"/> class
         /// </summary>
-        public MktDepthEventArgs(int tickerId, int position, int operation, int side, double price, decimal size)
+        public TapeEventArgs(int reqId, int tickType, long time, double price, decimal size)
         {
-            TickerId = tickerId;
-            Position = position;
-            Operation = operation;
-            Side = side;
+            TickerId = reqId;
+            TickType = tickType;
+            Time = time;
             Price = price;
             Size = size;
         }
