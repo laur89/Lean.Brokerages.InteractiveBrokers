@@ -2053,6 +2053,10 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 RestoreDataSubscriptions();
                 return;
             }
+            else if (errorCode == 317)  //        Error - Code: 317 - Market depth data has been RESET. Please empty deep book contents before applying any new entries.
+            {
+                _orderBook?.Clear();
+            }
             else if (errorCode == 506)
             {
                 Log.Trace("InteractiveBrokersBrokerage.HandleError(): Server Version: " + _client.ClientSocket.ServerVersion);
@@ -4576,10 +4580,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                     Time = GetRealTimeTickTime(symbol)
                 };
 
-                
-                
                 //Log.Trace($"InteractiveBrokersBrokerage.HandleTickSize(): emitting Tick");
-                
                 _aggregator.Update(tick);
             }
         }
@@ -4640,6 +4641,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             } // TODO: should we explicitly check for e.Side !=1 just to make sure api hasn't changed?
 
             _aggregator.Update(_orderBook.toOrderBook(GetRealTimeTickTime(symbol)));
+            //Console.WriteLine("!!! bestBidAsk: " + _orderBook.GetTopOfBook); // TODO deleteme
         }
         
         private void HandleTape(object sender, IB.TapeEventArgs e)
@@ -4656,10 +4658,12 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             
             // negative size (-1) means no quantity available, normalize to zero
             var quantity = e.Size < 0 ? 0 : e.Size;
-            // Console.WriteLine("HandleTape() " + e.TickerId + "; price: " + e.Price + "; size: " + e.Size + 
-                              // "; type: " + (e.TickType == 0 ? "Last" : "AllLast") + "; time: " + e.Time + "; datetime: " + GetTimeFromUnixEpoch(symbol, e.Time));
+            //Console.WriteLine("HandleTape() " + e.TickerId + "; price: " + e.Price + "; size: " + e.Size + 
+                              //"; type: " + (e.TickType == 0 ? "Last" : "AllLast") + "; time: " + e.Time + "; datetime: " + GetTimeFromUnixEpoch(symbol, e.Time));
             
-            _aggregator.Update(new Tape(symbol, e.Price, e.Size, GetTimeFromUnixEpoch(symbol, e.Time), _orderBook.BestBidAskPrice));
+            // Note: it's important to define time via GetRealTimeTickTime(), as IB provides us only with second
+            //       resolution that fucks shit up in LEAN -- records within same second get overwritten, possibly by the last one:
+            _aggregator.Update(new Tape(symbol, e.Price, e.Size, /*GetTimeFromUnixEpoch(symbol, e.Time)*/ GetRealTimeTickTime(symbol), _orderBook.GetTopOfBook));
         }
 
         /// <summary>
@@ -5730,6 +5734,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 && !groupName.Equals(_financialAdvisorsGroupFilter, StringComparison.InvariantCultureIgnoreCase);
         }
 
+        // TODO: shouldn't orderbook be managed in subscriptionentity? likely should be separate from trade/quote,
+        // as our reqId of market depth will be different from L1 data anyways:
         private class SubscriptionEntry
         {
             public Symbol Symbol { get; set; }
@@ -5886,7 +5892,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         // these are fatal errors from IB
         private static readonly HashSet<int> ErrorCodes = new HashSet<int>
         {
-            100, 101, 103, 138, 139, 142, 143, 144, 145, 200, 203, 300,301,302,306,308,309,310,311,316,317,320,321,322,323,324,326,327,330,331,332,333,344,346,354,357,365,366,381,384,401,414,431,432,438,501,502,503,504,505,506,507,508,510,511,512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,527,528,529,530,531,10000,10001,10005,10013,10015,10016,10021,10022,10023,10024,10025,10026,10027,1300
+            100, 101, 103, 138, 139, 142, 143, 144, 145, 200, 203, 300,301,302,306,308,309,310,311,316,320,321,322,323,324,326,327,330,331,332,333,344,346,354,357,365,366,381,384,401,414,431,432,438,501,502,503,504,505,506,507,508,510,511,512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,527,528,529,530,531,10000,10001,10005,10013,10015,10016,10021,10022,10023,10024,10025,10026,10027,1300
         };
 
         // these are warning messages from IB
