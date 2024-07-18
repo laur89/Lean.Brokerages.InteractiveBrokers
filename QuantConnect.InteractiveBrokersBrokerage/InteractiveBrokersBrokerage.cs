@@ -127,7 +127,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         private IOrderProvider _orderProvider;
         private IMapFileProvider _mapFileProvider;
         private IDataAggregator _aggregator;
-        private IbOrderBook _orderBook;
+        private IbOrderBook _orderBook;  // TODO: needs to live in subscriptionEntry
+        private BookSnapshot _bookSnap = new();  // TODO: needs to live in subscriptionEntry
         private IB.InteractiveBrokersClient _client;
 
         private string _agentDescription;
@@ -1474,6 +1475,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             _client.TickSize += HandleTickSize;
             _client.MktDepth += HandleMktDepth;
             _client.Tape += HandleTape;
+            _client.TapeBidAsk += HandleTapeBidAsk;
             _client.CurrentTimeUtc += HandleBrokerTime;
             _client.ReRouteMarketDataRequest += HandleMarketDataReRoute;
             if (!string.IsNullOrEmpty(financialAdvisorsGroupFilter))
@@ -4092,6 +4094,11 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         {
             Client.ClientSocket.reqTickByTickData(requestId, contract, "Last", 0, false);
         }
+        
+        private void RequestTapeTopOfBook(Contract contract, int requestId)
+        {
+            Client.ClientSocket.reqTickByTickData(requestId, contract, "BidAsk", 0, false);  // TODO: setting 'ignoreSize' to true might be reasonable here - quite sure we don't really care for it in our use
+        }
 
         /// <summary>
         /// Handles the re-route market data request event issued by the IB server
@@ -4111,6 +4118,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             RequestMarketData(underlyingContract, e.RequestId);
             RequestMarketDepth(underlyingContract, e.RequestId);  // TODO: confirm reqId... don't think it's valid here
             RequestTape(underlyingContract, e.RequestId);  // TODO: confirm reqId... don't think it's valid here
+            RequestTapeTopOfBook(underlyingContract, e.RequestId);  // TODO: confirm reqId... don't think it's valid here
         }
 
         /// <summary>
@@ -4156,6 +4164,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                             var id = GetNextId();
                             var depthId = GetNextId();
                             var tapeId = GetNextId();
+                            var tapeBidAskId = GetNextId();
                             var contract = CreateContract(subscribeSymbol, includeExpired: false);
                             var symbolProperties = _symbolPropertiesDatabase.GetSymbolProperties(subscribeSymbol.ID.Market, subscribeSymbol, subscribeSymbol.SecurityType, Currencies.USD);
                             var priceMagnifier = symbolProperties.PriceMagnifier;
@@ -4165,6 +4174,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                                 RequestId = id,
                                 DepthReqtId = depthId,
                                 TapeReqtId = tapeId,
+                                TapeBidAskReqtId = tapeBidAskId,
                                 RequestType = RequestType.Subscription,
                                 AssociatedSymbol = symbol,
                                 Message = $"[Id={id}] Subscribe: {symbol.Value} ({GetContractDescription(contract)})"
@@ -4183,12 +4193,14 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                                 _orderBook = new IbOrderBook(symbol);  // TODO: this is surely not the place now is it      
 
                                 RequestTape(contract, tapeId);
+                                RequestTapeTopOfBook(contract, tapeBidAskId);
                             }
 
                             _subscribedSymbols[symbol] = id;
                             _subscribedTickers[id] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
                             _subscribedTickers[depthId] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
                             _subscribedTickers[tapeId] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
+                            _subscribedTickers[tapeBidAskId] = new SubscriptionEntry { Symbol = subscribeSymbol, PriceMagnifier = priceMagnifier };
 
                             Log.Trace($"InteractiveBrokersBrokerage.Subscribe(): Subscribe Processed: {symbol.Value} ({GetContractDescription(contract)}) # {id}. SubscribedSymbols.Count: {_subscribedSymbols.Count}");
                         }
@@ -4595,12 +4607,13 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
             
             var symbol = entry.Symbol;
+            var dt = GetRealTimeTickTime(symbol);
             
             // negative size (-1) means no quantity available, normalize to zero
             var quantity = e.Size < 0 ? 0 : e.Size;
             // Console.WriteLine("HandleMktDepth() " + e.TickerId + " - Symbol: " + symbol + "; size: " + quantity);
             Console.WriteLine("HandleMktDepth() " + e.TickerId + "; op: " + e.Operation + "; position: " + e.Position + 
-                              "; side: " + (e.Side == 0 ? "ask" : "bid") + "; price: " + e.Price + "; size: " + e.Size);
+                              "; side: " + (e.Side == 0 ? "ask" : "bid") + "; price: " + e.Price + "; size: " + e.Size + "datetime: " + dt.ToString("hh:mm:ss.fff"));
             
             
             
@@ -4640,7 +4653,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 }
             } // TODO: should we explicitly check for e.Side !=1 just to make sure api hasn't changed?
 
-            _aggregator.Update(_orderBook.toOrderBook(GetRealTimeTickTime(symbol)));
+            _aggregator.Update(_orderBook.toOrderBook(dt));
             //Console.WriteLine("!!! bestBidAsk: " + _orderBook.GetTopOfBook); // TODO deleteme
         }
         
@@ -4655,15 +4668,39 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
             
             var symbol = entry.Symbol;
+            var dt = GetRealTimeTickTime(symbol);
             
             // negative size (-1) means no quantity available, normalize to zero
             var quantity = e.Size < 0 ? 0 : e.Size;
-            //Console.WriteLine("HandleTape() " + e.TickerId + "; price: " + e.Price + "; size: " + e.Size + 
-                              //"; type: " + (e.TickType == 0 ? "Last" : "AllLast") + "; time: " + e.Time + "; datetime: " + GetTimeFromUnixEpoch(symbol, e.Time));
+            Console.WriteLine("HandleTape() " + e.TickerId + "; price: " + e.Price + "; size: " + e.Size + 
+                              "; type: " + (e.TickType == 0 ? "Last" : "AllLast") + "; time: " + e.Time + "; datetime: " + dt.ToString("hh:mm:ss.fff"));
+            // Console.WriteLine("    bestBook1: bid: " + _orderBook.BidPrices[0] + " ask: " + _orderBook.AskPrices[0]);
+            // Console.WriteLine("    bestBook2: bid: " + _bookSnap.BidPrice + " ask: " + _bookSnap.AskPrice);
             
             // Note: it's important to define time via GetRealTimeTickTime(), as IB provides us only with second
             //       resolution that fucks shit up in LEAN -- records within same second get overwritten, possibly by the last one:
-            _aggregator.Update(new Tape(symbol, e.Price, e.Size, /*GetTimeFromUnixEpoch(symbol, e.Time)*/ GetRealTimeTickTime(symbol), _orderBook.GetTopOfBook));
+            _aggregator.Update(new Tape(symbol, e.Price, e.Size, /*GetTimeFromUnixEpoch(symbol, e.Time)*/ dt, _bookSnap.GetTopOfBook));  // alternatively for last arg:   _orderBook.GetTopOfBook 
+        }
+
+        private void HandleTapeBidAsk(object sender, IB.TapeBidAskEventArgs e)
+        {
+            SubscriptionEntry entry;
+            // TODO: given tape speed, won't this become a bottleneck?:
+            if (!_subscribedTickers.TryGetValue(e.TickerId, out entry))
+            {
+                Console.WriteLine("HandleTapeBidAsk() BOOO :(");
+                return;
+            }
+            
+            var symbol = entry.Symbol;
+            var dt = GetRealTimeTickTime(symbol);
+            
+            Console.WriteLine("HandleTapeBidAsk() " + e.TickerId + "; bidPrice: " + e.BidPrice + "; bidSize: " + e.BidSize + 
+                             "; askPrice: " + e.AskPrice + "; askSize: " + e.AskSize + "; time: " + e.Time + "; datetime: " + dt.ToString("hh:mm:ss.fff"));
+            _bookSnap.BidPrice = e.BidPrice;
+            _bookSnap.BidSize = e.BidSize;
+            _bookSnap.AskPrice = e.AskPrice;
+            _bookSnap.AskSize = e.AskSize;
         }
 
         /// <summary>
@@ -5941,6 +5978,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             public int RequestId { get; set; }
             public int DepthReqtId { get; set; }
             public int TapeReqtId { get; set; }
+            public int TapeBidAskReqtId { get; set; }
 
             public RequestType RequestType { get; set; }
 
