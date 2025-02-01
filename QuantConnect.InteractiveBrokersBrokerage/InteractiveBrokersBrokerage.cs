@@ -52,6 +52,7 @@ using IB = QuantConnect.Brokerages.InteractiveBrokers.Client;
 using Order = QuantConnect.Orders.Order;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using QuantConnect.Brokerages.InteractiveBrokers.Orderbook;
 using QuantConnect.Data.Auxiliary;
 using QuantConnect.Securities.Forex;
 using QuantConnect.Lean.Engine.Results;
@@ -121,6 +122,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         private IDataAggregator _aggregator;
         private IbOrderBook _orderBook;  // TODO: needs to live in subscriptionEntry
         private BookSnapshot _bookSnap = new();  // TODO: needs to live in subscriptionEntry
+        private bool _marketDepthUpdateDirty;
         private IB.InteractiveBrokersClient _client;
         private int _ibVersion;
         private string _agentDescription;
@@ -1841,6 +1843,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
             else if (errorCode == 317)  //        Error - Code: 317 - Market depth data has been RESET. Please empty deep book contents before applying any new entries.
             {
+                _marketDepthUpdateDirty = false;  // to make sure we don't emit OB event w/ empty arrays
                 _orderBook?.Clear();
             }
             else if (errorCode == 506)
@@ -3659,8 +3662,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
         /// </summary>
         private void RequestMarketDepth(Contract contract, int requestId)
         {
-            // TODO: confirm numRows!!!:
-            Client.ClientSocket.reqMarketDepth(requestId, contract, 5, false,  new List<TagValue>());
+            // TODO: note hard-coding numRows 10; over 10 we're still receiving only the 10
+            Client.ClientSocket.reqMarketDepth(requestId, contract, 10, false,  new List<TagValue>());
         }
         
         /// <summary>
@@ -3943,6 +3946,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
 
             var symbol = entry.Symbol;
+            sendL2BookSnapShotIfNeeded(symbol);
 
             // negative price (-1) means no price available, normalize to zero
             var price = e.Price < 0 ? 0 : Convert.ToDecimal(e.Price) / entry.PriceMagnifier;
@@ -4017,6 +4021,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             }
 
             var symbol = entry.Symbol;
+            sendL2BookSnapShotIfNeeded(symbol);
 
             // negative size (-1) means no quantity available, normalize to zero
             var quantity = e.Size < 0 ? 0 : e.Size;
@@ -4153,7 +4158,22 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 _aggregator.Update(tick);
             }
         }
-        
+
+        // idea from https://groups.io/g/twsapi/message/52056
+        // thanks Jürgen!
+        private void sendL2BookSnapShotIfNeeded(Symbol sym, DateTime? dt = null)
+        {
+            if (_marketDepthUpdateDirty)
+            {
+                var ob = _orderBook.ToOrderBookSnapshot(dt ?? GetRealTimeTickTime(sym));
+                
+                _aggregator.Update(ob);
+                OnOrderBookUpdated(new OrderBookUpdatedEvent(ob));  // note this is so BrokerageTransactionHandler can collect and send via pipe; aggregator is invoked so our algo is aware of updates, but that data cna't be sent as charts as data is not decimal
+                // actually.... we shouldn't need aggregator.update, as orders are available for our algos as well!
+                _marketDepthUpdateDirty = false;
+            }
+        }
+
         private void HandleMktDepth(object sender, IB.MktDepthEventArgs e)
         {
             SubscriptionEntry entry;
@@ -4162,6 +4182,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 Console.WriteLine("HandleMktDepth() BOOO :(");
                 return;
             }
+
+            _marketDepthUpdateDirty = true;  // mark L2 book state dirty as update records flow in...
             
             var symbol = entry.Symbol;
             var dt = GetRealTimeTickTime(symbol);
@@ -4210,7 +4232,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 }
             } // TODO: should we explicitly check for e.Side !=1 just to make sure api hasn't changed?
 
-            _aggregator.Update(_orderBook.toOrderBook(dt));
+            // _aggregator.Update(_orderBook.toOrderBook(dt));  // note we no longer send snapshots from here, as we don't know when the last record/row update is received
             //Console.WriteLine("!!! bestBidAsk: " + _orderBook.GetTopOfBook); // TODO deleteme
         }
         
@@ -4226,9 +4248,13 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             
             var symbol = entry.Symbol;
             var dt = GetRealTimeTickTime(symbol);
-            
             // negative size (-1) means no quantity available, normalize to zero
             var quantity = e.Size < 0 ? 0 : e.Size;
+            
+            var tape = new Tape(symbol, e.Price, e.Size, /*GetTimeFromUnixEpoch(symbol, e.Time)*/ dt, _bookSnap.GetTopOfBook);
+            _orderBook.UpdateForTape(tape);
+            sendL2BookSnapShotIfNeeded(symbol, dt);
+            
             Console.WriteLine("HandleTape() " + e.TickerId + "; price: " + e.Price + "; size: " + e.Size + 
                               "; type: " + (e.TickType == 0 ? "Last" : "AllLast") + "; time: " + e.Time + "; datetime: " + dt.ToString("hh:mm:ss.fff"));
             // Console.WriteLine("    bestBook1: bid: " + _orderBook.BidPrices[0] + " ask: " + _orderBook.AskPrices[0]);
@@ -4236,7 +4262,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             
             // Note: it's important to define time via GetRealTimeTickTime(), as IB provides us only with second
             //       resolution that fucks shit up in LEAN -- records within same second get overwritten, possibly by the last one:
-            _aggregator.Update(new Tape(symbol, e.Price, e.Size, /*GetTimeFromUnixEpoch(symbol, e.Time)*/ dt, _bookSnap.GetTopOfBook));  // alternatively for last arg:   _orderBook.GetTopOfBook 
+            
+            _aggregator.Update(tape);  // alternatively for last arg:   _orderBook.GetTopOfBook
         }
 
         private void HandleTapeBidAsk(object sender, IB.TapeBidAskEventArgs e)
@@ -4251,6 +4278,8 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
             
             var symbol = entry.Symbol;
             var dt = GetRealTimeTickTime(symbol);
+            
+            sendL2BookSnapShotIfNeeded(symbol, dt);
             
             Console.WriteLine("HandleTapeBidAsk() " + e.TickerId + "; bidPrice: " + e.BidPrice + "; bidSize: " + e.BidSize + 
                              "; askPrice: " + e.AskPrice + "; askSize: " + e.AskSize + "; time: " + e.Time + "; datetime: " + dt.ToString("hh:mm:ss.fff"));
