@@ -27,6 +27,11 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.2" />
+    <!--
+    Note following pythonnet pkg was added by me as otherwise build failed - see (https://github.com/QuantConnect/Lean.Brokerages.InteractiveBrokers/issues/138)
+    Did try running "dotnet clean" in both here and Lean projects, but no joy.
+    -->
+    <PackageReference Include="QuantConnect.pythonnet" Version="2.0.42" />
   </ItemGroup>
 
   <ItemGroup>
