@@ -36,6 +36,13 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Orderbook
         // price-to-size mappings for bid&ask that _actually traded_ on tape:
         public readonly Dictionary<double, decimal> TapeAskSizes = new(10);
         public readonly Dictionary<double, decimal> TapeBidSizes = new(10);
+        
+        // max sizes for given price levels:
+        public readonly Dictionary<double, decimal> MaxAskSizes = new(10);
+        public readonly Dictionary<double, decimal> MaxBidSizes = new(10);
+        
+        public readonly Dictionary<double, decimal> UntradedAsks = new(10);
+        public readonly Dictionary<double, decimal> UntradedBids = new(10);
 
         protected readonly object _locker = new();
 
@@ -249,8 +256,26 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Orderbook
                 //     Bids.RemoveAt(position);
                 // }
                 //
+                                
+                if (position == 0)  // updating top of the book
+                {
+                    double previousTopBidPrice = BidPrices[0];
+                    // if (!price.Equals(previousTopBidPrice))
+                    if (price < previousTopBidPrice && MaxBidSizes.TryGetValue(price, out var maxBookSizeForPrice))  // meaning previousTopBidPrice gets pushed off the stack
+                    {
+                        TapeBidSizes.TryGetValue(previousTopBidPrice, out var sizeTradedAtPreviousTopBid);
+                        // either deduct from sizeTradedAtPreviousTopBid...
+                        // var previousTopBidSize = AskSizes[0];
+                        // var remainingUntradedSize = previousTopBidSize - sizeTradedAtPreviousTopBid;
+                        // UntradedBids[price] = remainingUntradedSize;
+                        //   ...or from max bid for given price we recorded:
+                        UntradedBids[price] = maxBookSizeForPrice - sizeTradedAtPreviousTopBid;
+                        // MaxBidSizes.Remove(price);  // TODO: can we clean up here instead of toSnapthot() method?
+                    }
+                }
                 BidPrices[position] = price;
                 BidSizes[position] = size;
+                UpdateLargestSize(MaxBidSizes, price, size);
                 manageUpdateInsertBestBid(position, price, size);
             }
         }
@@ -268,10 +293,36 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Orderbook
                 // {
                 //     Asks.RemoveAt(position);
                 // }
-                
+                                
+                if (position == 0)  // updating top of the book
+                {
+                    double previousTopAskPrice = AskPrices[0];
+                    // if (!price.Equals(previousTopAskPrice))
+                    if (price > previousTopAskPrice && MaxAskSizes.TryGetValue(price, out var maxBookSizeForPrice))  // meaning previousTopAskPrice gets pushed off the stack 
+                    {
+                        TapeAskSizes.TryGetValue(previousTopAskPrice, out var sizeTradedAtPreviousTopAsk);
+                        // either deduct from sizeTradedAtPreviousTopBid...
+                        // var previousTopAskSize = AskSizes[0];
+                        // var remainingUntradedSize = previousTopAskSize - sizeTradedAtPreviousTopAsk;
+                        // UntradedAsks[price] = remainingUntradedSize;
+                        //   ...or from max bid for given price we recorded:
+                        UntradedAsks[price] = maxBookSizeForPrice - sizeTradedAtPreviousTopAsk;
+                        // MaxAskSizes.Remove(price);  // TODO: can we clean up here instead of toSnapthot() method?
+                    }
+                }
                 AskPrices[position] = price;
                 AskSizes[position] = size;
+                UpdateLargestSize(MaxAskSizes, price, size);
                 manageUpdateInsertBestAsk(position, price, size);
+            }
+        }
+
+        private void UpdateLargestSize(Dictionary<double, decimal> maxBidsOrAsks, double price, decimal size)
+        {
+            maxBidsOrAsks.TryGetValue(price, out var sizeTradedAtPreviousPrice);
+            if (size > sizeTradedAtPreviousPrice)
+            {
+                maxBidsOrAsks[price] = size;
             }
         }
 
@@ -353,20 +404,33 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Orderbook
             }
         }
 
+        private void ClearByPrices(Dictionary<double, decimal> bidOrAskMapToClear, List<double> refPrices)
+        {
+            bidOrAskMapToClear.Keys.Except(refPrices).ToList()
+                .ForEach(key => bidOrAskMapToClear.Remove(key));
+        }
+
         public OrderBook ToOrderBookSnapshot(DateTime time)
         {
             // first clean up tapeSizes of prices not tracked by the book at the time of taking the snapshot;
             // this is also useful for general house-keeping:
             // TODO: this however leaves out bunch of tape data it consolidated OrderBookBars, no?
-            TapeBidSizes.Keys.Except(BidPrices).ToList()
-                .ForEach(key => TapeBidSizes.Remove(key));
-            TapeAskSizes.Keys.Except(AskPrices).ToList()
-                .ForEach(key => TapeAskSizes.Remove(key));
+            ClearByPrices(TapeBidSizes, BidPrices);
+            ClearByPrices(TapeAskSizes, AskPrices);
+            
+            ClearByPrices(MaxBidSizes, BidPrices);
+            ClearByPrices(MaxAskSizes, AskPrices);
 
             // TODO: do we need to lock here?:
-            return new OrderBook(
+            var obSnap = new OrderBook(
                 Symbol, time, BidPrices, BidSizes, AskPrices,
-                AskSizes, TapeBidSizes, TapeAskSizes);
+                AskSizes, TapeBidSizes, TapeAskSizes, UntradedBids.Values.ToList(), UntradedAsks.Values.ToList());
+            
+            // clean up untraded data:
+            ClearByPrices(UntradedBids, BidPrices);
+            ClearByPrices(UntradedAsks, AskPrices);
+
+            return obSnap;
         }
 
         private void UpdateTradedSizeForPrice(Tape tape, Dictionary<double, decimal> priceToSizeMap)
@@ -380,10 +444,10 @@ namespace QuantConnect.Brokerages.InteractiveBrokers.Orderbook
         {
             switch (tape.Side)
             {
-                case Side.Green or Side.Ask:
+                case Side.Green or Side.Ask:  // trades that happened around best ask price
                     UpdateTradedSizeForPrice(tape, TapeAskSizes);
                     break;
-                case Side.Red or Side.Bid:
+                case Side.Red or Side.Bid:  // trades that happened around best bid price
                     UpdateTradedSizeForPrice(tape, TapeBidSizes);
                     break;
                 // case Side.Middle:  // TODO: skip middle?
