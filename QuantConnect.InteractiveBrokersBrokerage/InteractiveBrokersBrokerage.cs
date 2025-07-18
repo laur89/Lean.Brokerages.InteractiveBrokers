@@ -1373,7 +1373,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
                 return;
             }
 
-            ValidateSubscription();
+            //ValidateSubscription();
 
             _isInitialized = true;
             _loadExistingHoldings = loadExistingHoldings;
