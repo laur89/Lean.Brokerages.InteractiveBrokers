@@ -31,7 +31,7 @@
     Note following pythonnet pkg was added by me as otherwise build failed - see (https://github.com/QuantConnect/Lean.Brokerages.InteractiveBrokers/issues/138)
     Did try running "dotnet clean" in both here and Lean projects, but no joy.
     -->
-    <PackageReference Include="QuantConnect.pythonnet" Version="2.0.44" />
+    <PackageReference Include="QuantConnect.pythonnet" Version="2.0.46" />
   </ItemGroup>
 
   <ItemGroup>
