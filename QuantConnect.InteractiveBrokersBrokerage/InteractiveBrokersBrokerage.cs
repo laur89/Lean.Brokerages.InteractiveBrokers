@@ -4391,7 +4391,7 @@ namespace QuantConnect.Brokerages.InteractiveBrokers
 
         private DateTime GetTimeFromUnixEpoch(Symbol symbol, long unixEpoch)
         {
-            return DateTime.UnixEpoch.AddSeconds(unixEpoch).ConvertFromUtc(GetSecurityExchangeHours(request.Symbol).TimeZone);
+            return DateTime.UnixEpoch.AddSeconds(unixEpoch).ConvertFromUtc(GetSecurityExchangeHours(symbol).TimeZone);
         }
         
         private void HandleTickPrice(object sender, IB.TickPriceEventArgs e)
